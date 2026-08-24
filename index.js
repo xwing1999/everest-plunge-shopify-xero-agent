@@ -141,7 +141,11 @@ async function xeroRequest(pathSegment, { method = 'GET', params, body, headers 
   if (!res.ok) {
     throw new Error(`Xero API error ${res.status} on ${method} ${pathSegment}: ${await res.text()}`);
   }
-  return res.json();
+  // Some endpoints (e.g. Invoices/{id}/Email) return 204 with an empty body
+  // on success — res.json() throws on that, which would make a successful
+  // call look like a failure. Read as text first, only parse if non-empty.
+  const text = await res.text();
+  return text ? JSON.parse(text) : {};
 }
 
 // ---------------------------------------------------------------------------
@@ -276,7 +280,12 @@ function verifyShopifyWebhook(req) {
     .createHmac('sha256', process.env.SHOPIFY_WEBHOOK_SECRET)
     .update(req.rawBody, 'utf8')
     .digest('base64');
-  return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(hmacHeader));
+  const digestBuf = Buffer.from(digest);
+  const headerBuf = Buffer.from(hmacHeader);
+  // timingSafeEqual throws (rather than returning false) on a length
+  // mismatch — a malformed/corrupted signature must not crash the handler.
+  if (digestBuf.length !== headerBuf.length) return false;
+  return crypto.timingSafeEqual(digestBuf, headerBuf);
 }
 
 // ---------------------------------------------------------------------------
