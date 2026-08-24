@@ -1,0 +1,63 @@
+# Reference only — Railway does NOT read this file. Paste real values into
+# Railway's Variables tab directly. Never put real secrets in this file or
+# commit them to git.
+
+# Shared secret admin endpoints must send as x-api-key (e.g. /admin/failed-
+# orders, /admin/replay-order). Generate your own random value.
+API_KEY=
+
+# Xero OAuth app for Everest Plunge's OWN Xero organisation — do NOT reuse
+# any Kiwiseal Xero app's Client ID/Secret. Create at developer.xero.com >
+# My Apps > New App, and make sure you log into Xero as Everest Plunge (not
+# Kiwiseal) when you connect it in the /oauth/start step below.
+XERO_CLIENT_ID=
+XERO_CLIENT_SECRET=
+
+# Must exactly match the Redirect URI configured on the Xero app, e.g.
+# https://everest-plunge-shopify-xero-agent-production.up.railway.app/oauth/callback
+XERO_REDIRECT_URI=
+
+# Leave blank on first deploy. After deploying, visit
+# https://<this-service's-railway-url>/oauth/start in your own browser, log
+# into Xero as Everest Plunge, grant consent. The callback page shows the
+# tenant name (confirm it says Everest Plunge, not Kiwiseal) and refresh
+# token — paste TENANT_ID here now; REFRESH_TOKEN only needs pasting here if
+# this service has no persistent volume attached.
+XERO_TENANT_ID=
+XERO_REFRESH_TOKEN=
+
+# Optional — path to persist the rotating Xero refresh token + failed-order
+# log across restarts. Only works if a Railway volume is mounted. Defaults
+# shown below if omitted.
+XERO_TOKEN_FILE=/data/xero-token.json
+FAILED_LOG_FILE=/data/failed-orders.json
+
+# --- Xero chart-of-accounts values — CONFIRM these against your real Xero
+# org, do not guess. Ask your accountant if unsure.
+# Account code that Shopify sales line items post to (e.g. a "Sales" revenue
+# account — check Xero > Accounting > Chart of Accounts for the real code).
+XERO_SALES_ACCOUNT_CODE=
+# Tax type matching how your Shopify prices are entered. NZ retail prices
+# are normally GST-inclusive — if that's true for Everest Plunge's Shopify
+# products, this should be Xero's 15% GST tax type (commonly "OUTPUT2" on
+# NZ Xero orgs, but confirm the exact code in your org — Xero > Advanced >
+# Tax rates).
+XERO_TAX_TYPE=
+# A bank/clearing account representing Shopify Payments payouts. This agent
+# marks each invoice PAID immediately against this account (Shopify already
+# collected the money at checkout) — otherwise every online sale sits in
+# Xero as an outstanding unpaid receivable, which is wrong. Leave blank to
+# skip this step and leave invoices as AUTHORISED/unpaid instead.
+XERO_SHOPIFY_PAYMENTS_ACCOUNT_CODE=
+
+# --- Shopify webhook — register the webhook itself via Shopify Admin >
+# Settings > Notifications > Webhooks (simplest, no code needed): topic
+# "Order payment", format JSON, URL = this service's
+# /webhooks/shopify/orders-paid. The secret below is used to verify the
+# X-Shopify-Hmac-Sha256 signature on incoming webhooks — Shopify shows it
+# when you create the webhook (or it's your app's API secret key if
+# registered a different way).
+SHOPIFY_WEBHOOK_SECRET=
+
+# Service
+PORT=3007

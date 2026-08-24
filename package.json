@@ -1,0 +1,15 @@
+{
+  "name": "everest-plunge-shopify-xero-agent",
+  "version": "1.0.0",
+  "description": "Standalone automation service: on a paid Shopify order, creates and emails the matching Xero sales invoice for Everest Plunge, then marks it paid. No LLM in the write path — this is a deterministic data mapping, not a question-answering agent.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5"
+  }
+}
