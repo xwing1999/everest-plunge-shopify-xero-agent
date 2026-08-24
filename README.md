@@ -30,11 +30,17 @@ Business-Brain-style chat agents.
    `XERO_TAX_TYPE`, and `XERO_SHOPIFY_PAYMENTS_ACCOUNT_CODE` — these are
    real values from your Xero org, not guesses. See `env-vars.txt` for what
    each one means and where to find it.
-3. **Shopify**: in the Shopify admin, go to Settings > Notifications >
+3. **Stock sheet integration (optional)**: if `everest-plunge-stock-sheet-agent`
+   is deployed, set `STOCK_SHEET_AGENT_URL`/`STOCK_SHEET_AGENT_API_KEY` so
+   this agent bumps the Stock Overview "New Orders" count for each SKU sold,
+   right after invoicing. Assumes Shopify variant SKUs match the "SKU-xxx"
+   codes in the Operations sheet — confirm that's actually true for your
+   product catalog. Leave blank to skip this step entirely.
+4. **Shopify**: in the Shopify admin, go to Settings > Notifications >
    Webhooks, add a webhook for topic "Order payment" (JSON format) pointing
    at `https://<this-service>/webhooks/shopify/orders-paid`. Copy the
    signing secret Shopify shows you into `SHOPIFY_WEBHOOK_SECRET`.
-4. Send a real test order through Shopify checkout and confirm: a contact
+5. Send a real test order through Shopify checkout and confirm: a contact
    appears in Xero, an invoice is created and marked paid, and the
    customer actually receives the emailed invoice.
 

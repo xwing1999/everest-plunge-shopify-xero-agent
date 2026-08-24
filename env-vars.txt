@@ -59,5 +59,12 @@ XERO_SHOPIFY_PAYMENTS_ACCOUNT_CODE=
 # registered a different way).
 SHOPIFY_WEBHOOK_SECRET=
 
+# --- Stock sheet integration (optional) — after invoicing, bumps the
+# Stock Overview "New Orders" count for each SKU sold. Leave blank to skip
+# this entirely (e.g. if the stock sheet agent isn't deployed yet).
+STOCK_SHEET_AGENT_URL=
+STOCK_SHEET_AGENT_API_KEY=
+STOCK_RECORDED_FILE=/data/stock-recorded.json
+
 # Service
 PORT=3007

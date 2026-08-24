@@ -379,39 +379,115 @@ async function createInvoiceForOrder(order) {
   // restart could replay an in-flight one. Check Xero for an invoice
   // already carrying this order's Reference before creating a duplicate.
   const already = await xeroRequest('Invoices', { params: { where: `Reference=="Shopify ${order.name}"` } });
+  let invoice;
+
   if (already.Invoices?.length) {
-    console.log(`Invoice already exists for ${order.name} (Reference match) — skipping.`);
-    return already.Invoices[0];
+    console.log(`Invoice already exists for ${order.name} (Reference match) — skipping invoice creation.`);
+    invoice = already.Invoices[0];
+  } else {
+    const contactId = await findOrCreateContact(order);
+    const invoicePayload = await shopifyOrderToInvoice(order, contactId);
+    const created = await xeroRequest('Invoices', { method: 'PUT', body: { Invoices: [invoicePayload] } });
+    invoice = created.Invoices[0];
+
+    if (process.env.XERO_SHOPIFY_PAYMENTS_ACCOUNT_CODE) {
+      await xeroRequest('Payments', {
+        method: 'PUT',
+        body: {
+          Payments: [{
+            Invoice: { InvoiceID: invoice.InvoiceID },
+            Account: { Code: process.env.XERO_SHOPIFY_PAYMENTS_ACCOUNT_CODE },
+            Date: invoice.DateString?.slice(0, 10) ?? new Date().toISOString().slice(0, 10),
+            Amount: invoice.Total
+          }]
+        }
+      });
+    }
+
+    // Sends the invoice to the customer via Xero's own email delivery — same
+    // as clicking "Email" on the invoice in the Xero UI. NOT yet confirmed
+    // against a live Xero org (no Everest Plunge credentials to test
+    // against at write time) — verify this endpoint actually fires an
+    // email once OAuth is connected, same discipline as every other
+    // endpoint in this project: don't trust an unconfirmed guess.
+    await xeroRequest(`Invoices/${invoice.InvoiceID}/Email`, { method: 'POST' });
   }
 
-  const contactId = await findOrCreateContact(order);
-  const invoicePayload = await shopifyOrderToInvoice(order, contactId);
-  const created = await xeroRequest('Invoices', { method: 'PUT', body: { Invoices: [invoicePayload] } });
-  const invoice = created.Invoices[0];
-
-  if (process.env.XERO_SHOPIFY_PAYMENTS_ACCOUNT_CODE) {
-    await xeroRequest('Payments', {
-      method: 'PUT',
-      body: {
-        Payments: [{
-          Invoice: { InvoiceID: invoice.InvoiceID },
-          Account: { Code: process.env.XERO_SHOPIFY_PAYMENTS_ACCOUNT_CODE },
-          Date: invoice.DateString?.slice(0, 10) ?? new Date().toISOString().slice(0, 10),
-          Amount: invoice.Total
-        }]
-      }
-    });
-  }
-
-  // Sends the invoice to the customer via Xero's own email delivery — same
-  // as clicking "Email" on the invoice in the Xero UI. NOT yet confirmed
-  // against a live Xero org (no Everest Plunge credentials to test against
-  // at write time) — verify this endpoint actually fires an email once
-  // OAuth is connected, same discipline as every other endpoint in this
-  // project: don't trust an unconfirmed guess.
-  await xeroRequest(`Invoices/${invoice.InvoiceID}/Email`, { method: 'POST' });
+  // Always attempted, even when the invoice already existed (e.g. this is
+  // a replay after a stock-only failure) — safe to call repeatedly because
+  // recordStockForOrder tracks completion per (order, SKU) itself, see
+  // below. Deliberately does NOT throw on failure — the invoice is the
+  // part that actually matters and has already succeeded either way; a
+  // stock sheet hiccup shouldn't get conflated with an invoicing failure.
+  await recordStockForOrder(order);
 
   return invoice;
+}
+
+// ---------------------------------------------------------------------------
+// STOCK SHEET INTEGRATION — optional. Only runs if STOCK_SHEET_AGENT_URL is
+// configured, so this agent can be deployed and used on its own before the
+// stock sheet agent exists. Only handles line items that carry a Shopify
+// variant SKU matching a "SKU-xxx" row in the Operations sheet's Stock
+// Overview tab — assumes Shopify product SKUs are kept in sync with that
+// sheet's SKU column, which is standard practice but not something this
+// agent can verify itself. A line item with no SKU, or one the stock sheet
+// agent doesn't recognise, is skipped and flagged, not guessed at.
+//
+// The stock sheet's "record an order" call INCREMENTS a count rather than
+// setting it, so it is NOT safe to call twice for the same line item. Since
+// createInvoiceForOrder above calls this on every replay (not just the
+// first attempt), completion is tracked per (order name, SKU) in a
+// persisted set — only SKUs that haven't succeeded yet are attempted, so a
+// replay after a partial failure doesn't double-count the ones that
+// already went through.
+// ---------------------------------------------------------------------------
+const STOCK_RECORDED_FILE = process.env.STOCK_RECORDED_FILE || '/data/stock-recorded.json';
+
+function loadStockRecordedSet() {
+  try { return new Set(JSON.parse(fs.readFileSync(STOCK_RECORDED_FILE, 'utf8'))); } catch { return new Set(); }
+}
+function saveStockRecordedSet(set) {
+  try {
+    fs.mkdirSync(path.dirname(STOCK_RECORDED_FILE), { recursive: true });
+    fs.writeFileSync(STOCK_RECORDED_FILE, JSON.stringify([...set]));
+  } catch (err) {
+    console.warn('Could not persist stock-recorded set to disk:', err.message);
+  }
+}
+
+async function recordStockForOrder(order) {
+  if (!process.env.STOCK_SHEET_AGENT_URL) return;
+  const recorded = loadStockRecordedSet();
+
+  for (const li of order.line_items) {
+    if (!li.sku) {
+      console.warn(`Order ${order.name}: line item "${li.title}" has no SKU — skipping stock update.`);
+      continue;
+    }
+    const key = `${order.name}:${li.sku}`;
+    if (recorded.has(key)) continue; // already recorded on a prior attempt
+
+    try {
+      const res = await fetch(`${process.env.STOCK_SHEET_AGENT_URL}/admin/record-order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.STOCK_SHEET_AGENT_API_KEY },
+        body: JSON.stringify({ sku: li.sku, quantity: li.quantity })
+      });
+      if (!res.ok) throw new Error(`Stock sheet agent error ${res.status}: ${await res.text()}`);
+      recorded.add(key);
+      saveStockRecordedSet(recorded);
+    } catch (err) {
+      console.error(`Order ${order.name}: failed to record stock for SKU ${li.sku}:`, err.message);
+      appendFailedLog({
+        orderName: order.name,
+        orderId: order.id,
+        order,
+        error: `Invoice succeeded, but stock update failed for SKU ${li.sku}: ${err.message}`,
+        stage: 'stock-update'
+      });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
