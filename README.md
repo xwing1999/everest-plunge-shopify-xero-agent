@@ -32,10 +32,13 @@ Business-Brain-style chat agents.
    each one means and where to find it.
 3. **Stock sheet integration (optional)**: if `everest-plunge-stock-sheet-agent`
    is deployed, set `STOCK_SHEET_AGENT_URL`/`STOCK_SHEET_AGENT_API_KEY` so
-   this agent bumps the Stock Overview "New Orders" count for each SKU sold,
-   right after invoicing. Assumes Shopify variant SKUs match the "SKU-xxx"
-   codes in the Operations sheet — confirm that's actually true for your
-   product catalog. Leave blank to skip this step entirely.
+   this agent, right after invoicing, (a) bumps the Stock Overview "New
+   Orders" count for each SKU sold, and (b) logs the sale into the
+   Automation Log tab so it shows up in the ops console's "Recent Orders"
+   list automatically — no one has to type it in by hand. Assumes Shopify
+   variant SKUs match the "SKU-xxx" codes in the Operations sheet — confirm
+   that's actually true for your product catalog. Leave blank to skip this
+   step entirely.
 4. **Shopify**: in the Shopify admin, go to Settings > Notifications >
    Webhooks, add a webhook for topic "Order payment" (JSON format) pointing
    at `https://<this-service>/webhooks/shopify/orders-paid`. Copy the

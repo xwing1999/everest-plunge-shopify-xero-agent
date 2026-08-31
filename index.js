@@ -292,6 +292,15 @@ function verifyShopifyWebhook(req) {
 // XERO CONTACT MATCH-OR-CREATE — by email, same as the Kiwiseal read agents'
 // lookup pattern but with a create fallback since this one writes.
 // ---------------------------------------------------------------------------
+function deriveCustomerName(shopifyOrder, addr) {
+  return [addr?.name, shopifyOrder.customer?.first_name, shopifyOrder.customer?.last_name].filter(Boolean).join(' ') || shopifyOrder.email || '';
+}
+
+function deriveDeliveryAddress(addr) {
+  if (!addr?.address1) return '';
+  return [addr.address1, addr.address2, addr.city, addr.province, addr.zip, addr.country].filter(Boolean).join(', ');
+}
+
 async function findOrCreateContact(shopifyOrder) {
   const email = shopifyOrder.email || shopifyOrder.contact_email;
   if (!email) throw new Error('Shopify order has no customer email — cannot match/create a Xero contact.');
@@ -304,7 +313,7 @@ async function findOrCreateContact(shopifyOrder) {
     method: 'PUT',
     body: {
       Contacts: [{
-        Name: [addr.name, shopifyOrder.customer?.first_name, shopifyOrder.customer?.last_name].filter(Boolean).join(' ') || email,
+        Name: deriveCustomerName(shopifyOrder, addr) || email,
         EmailAddress: email,
         Addresses: addr.address1 ? [{
           AddressType: 'STREET',
@@ -456,36 +465,81 @@ function saveStockRecordedSet(set) {
   }
 }
 
+async function callStockSheetAgent(pathSegment, body) {
+  const res = await fetch(`${process.env.STOCK_SHEET_AGENT_URL}${pathSegment}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.STOCK_SHEET_AGENT_API_KEY },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(`Stock sheet agent error ${res.status} on ${pathSegment}: ${await res.text()}`);
+}
+
+// For each SKU sold: (1) bump Stock Overview's New Orders count, (2) log
+// the sale into the Automation Log tab so it shows up in the ops console's
+// "Recent Orders" list without anyone typing it in by hand. These are
+// tracked as TWO INDEPENDENT idempotency keys per (order, SKU), not one —
+// record-order is not itself idempotent (it increments), so if it succeeds
+// but log-sold-deal then fails, a replay must skip record-order (already
+// done) and only retry log-sold-deal. One shared key would have replayed
+// both together and double-counted the stock update.
 async function recordStockForOrder(order) {
   if (!process.env.STOCK_SHEET_AGENT_URL) return;
   const recorded = loadStockRecordedSet();
+  const addr = order.shipping_address || order.billing_address || {};
+  const customerName = deriveCustomerName(order, addr);
+  const deliveryAddress = deriveDeliveryAddress(addr);
 
   for (const li of order.line_items) {
     if (!li.sku) {
       console.warn(`Order ${order.name}: line item "${li.title}" has no SKU — skipping stock update.`);
       continue;
     }
-    const key = `${order.name}:${li.sku}`;
-    if (recorded.has(key)) continue; // already recorded on a prior attempt
+    const recordKey = `record:${order.name}:${li.sku}`;
+    const logKey = `log:${order.name}:${li.sku}`;
 
-    try {
-      const res = await fetch(`${process.env.STOCK_SHEET_AGENT_URL}/admin/record-order`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.STOCK_SHEET_AGENT_API_KEY },
-        body: JSON.stringify({ sku: li.sku, quantity: li.quantity })
-      });
-      if (!res.ok) throw new Error(`Stock sheet agent error ${res.status}: ${await res.text()}`);
-      recorded.add(key);
-      saveStockRecordedSet(recorded);
-    } catch (err) {
-      console.error(`Order ${order.name}: failed to record stock for SKU ${li.sku}:`, err.message);
-      appendFailedLog({
-        orderName: order.name,
-        orderId: order.id,
-        order,
-        error: `Invoice succeeded, but stock update failed for SKU ${li.sku}: ${err.message}`,
-        stage: 'stock-update'
-      });
+    if (!recorded.has(recordKey)) {
+      try {
+        await callStockSheetAgent('/admin/record-order', { sku: li.sku, quantity: li.quantity });
+        recorded.add(recordKey);
+        saveStockRecordedSet(recorded);
+      } catch (err) {
+        console.error(`Order ${order.name}: failed to record stock count for SKU ${li.sku}:`, err.message);
+        appendFailedLog({
+          orderName: order.name,
+          orderId: order.id,
+          order,
+          error: `Invoice succeeded, but stock count update failed for SKU ${li.sku}: ${err.message}`,
+          stage: 'stock-update'
+        });
+        continue; // don't log the deal if the stock count itself didn't go through
+      }
+    }
+
+    if (!recorded.has(logKey)) {
+      try {
+        await callStockSheetAgent('/admin/log-sold-deal', {
+          source: 'Shopify',
+          customerName: customerName || order.email || `Order ${order.name}`,
+          email: order.email || '',
+          sku: li.sku,
+          quantity: li.quantity,
+          deliveryAddress,
+          dealValue: Number(li.price) * li.quantity,
+          depositStatus: 'Paid in full',
+          notes: `Shopify order ${order.name}`
+        });
+        recorded.add(logKey);
+        saveStockRecordedSet(recorded);
+      } catch (err) {
+        console.error(`Order ${order.name}: failed to log sold deal for SKU ${li.sku}:`, err.message);
+        appendFailedLog({
+          orderName: order.name,
+          orderId: order.id,
+          order,
+          error: `Invoice + stock count succeeded, but logging the sold deal failed for SKU ${li.sku}: ${err.message}`,
+          stage: 'deal-logging'
+        });
+      }
     }
   }
 }
