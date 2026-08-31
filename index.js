@@ -7,6 +7,25 @@ import path from 'path';
 const app = express();
 
 // ---------------------------------------------------------------------------
+// KEYED LOCK — added 2026-08-31 after an audit found a real race: without
+// this, two overlapping webhook deliveries for the same order (Shopify's
+// own retry semantics, or a manual replay overlapping a fresh delivery)
+// could both pass the "does an invoice already exist?" check before either
+// finished creating one, producing duplicate invoices AND duplicate
+// payments for one real sale. This serializes calls sharing the same key
+// within this process — sufficient at this scale (one Railway instance,
+// not horizontally scaled); a true cross-instance lock would need
+// something external, which isn't warranted here.
+// ---------------------------------------------------------------------------
+const locks = new Map();
+function withLock(key, fn) {
+  const prevTail = locks.get(key) || Promise.resolve();
+  const run = prevTail.then(fn, fn);
+  locks.set(key, run.then(() => {}, () => {}));
+  return run;
+}
+
+// ---------------------------------------------------------------------------
 // Shopify webhook signature verification needs the RAW request body (HMAC is
 // computed over the exact bytes Shopify sent) — must capture it before
 // express.json() parses/reformats anything. Every other route gets the
@@ -351,10 +370,15 @@ async function findOrCreateContact(shopifyOrder) {
 //     going live.
 // ---------------------------------------------------------------------------
 async function shopifyOrderToInvoice(order, contactId) {
+  // LineAmount (not UnitAmount*Quantity) so a per-line discount
+  // (li.total_discount, a standard Shopify webhook field) is actually
+  // reflected — li.price is the PRE-discount unit price, so using it alone
+  // invoices (and then marks paid) more than the customer was actually
+  // charged. Found by audit 2026-08-31, was previously unhandled.
   const lineItems = order.line_items.map((li) => ({
     Description: li.title + (li.variant_title ? ` (${li.variant_title})` : ''),
     Quantity: li.quantity,
-    UnitAmount: Number(li.price),
+    LineAmount: (Number(li.price) * li.quantity) - Number(li.total_discount || 0),
     AccountCode: process.env.XERO_SALES_ACCOUNT_CODE,
     TaxType: process.env.XERO_TAX_TYPE
   }));
@@ -383,7 +407,15 @@ async function shopifyOrderToInvoice(order, contactId) {
   };
 }
 
+// Locked by order.name (see withLock above) — an audit found that without
+// this, two overlapping calls (Shopify redelivery, or a replay overlapping
+// a fresh webhook) could both pass the idempotency check below before
+// either finished, creating two invoices and two payments for one order.
 async function createInvoiceForOrder(order) {
+  return withLock(`invoice:${order.name}`, () => createInvoiceForOrderLocked(order));
+}
+
+async function createInvoiceForOrderLocked(order) {
   // Idempotency guard: Shopify retries webhook deliveries, and a Railway
   // restart could replay an in-flight one. Check Xero for an invoice
   // already carrying this order's Reference before creating a duplicate.
@@ -391,14 +423,23 @@ async function createInvoiceForOrder(order) {
   let invoice;
 
   if (already.Invoices?.length) {
-    console.log(`Invoice already exists for ${order.name} (Reference match) — skipping invoice creation.`);
+    console.log(`Invoice already exists for ${order.name} (Reference match) — checking payment/email are actually complete.`);
     invoice = already.Invoices[0];
   } else {
     const contactId = await findOrCreateContact(order);
     const invoicePayload = await shopifyOrderToInvoice(order, contactId);
     const created = await xeroRequest('Invoices', { method: 'PUT', body: { Invoices: [invoicePayload] } });
     invoice = created.Invoices[0];
+  }
 
+  // Payment and email are checked/completed whether the invoice was just
+  // created OR found already existing — previously, an "already exists"
+  // invoice short-circuited straight past both, so a failure between
+  // invoice-creation and payment/email left the order permanently stuck
+  // (found by audit 2026-08-31): a replay would find the invoice, take the
+  // early-return path, and never retry the steps that actually failed.
+  const amountDue = Number(invoice.AmountDue ?? invoice.Total ?? 0);
+  if (amountDue > 0) {
     if (process.env.XERO_SHOPIFY_PAYMENTS_ACCOUNT_CODE) {
       await xeroRequest('Payments', {
         method: 'PUT',
@@ -407,20 +448,27 @@ async function createInvoiceForOrder(order) {
             Invoice: { InvoiceID: invoice.InvoiceID },
             Account: { Code: process.env.XERO_SHOPIFY_PAYMENTS_ACCOUNT_CODE },
             Date: invoice.DateString?.slice(0, 10) ?? new Date().toISOString().slice(0, 10),
-            Amount: invoice.Total
+            Amount: amountDue
           }]
         }
       });
+    } else {
+      // Previously silent — an unset/misspelled env var meant every order
+      // invoiced fine and looked successful, but never got marked paid,
+      // sitting as a false outstanding receivable with nothing surfacing
+      // it. Now loud, so it can't go unnoticed the way it did before.
+      console.error(
+        `XERO_SHOPIFY_PAYMENTS_ACCOUNT_CODE is not set — order ${order.name}'s invoice was created but ` +
+        `NOT marked paid. This is very likely a misconfiguration; fix the env var and re-run this order.`
+      );
     }
-
-    // Sends the invoice to the customer via Xero's own email delivery — same
-    // as clicking "Email" on the invoice in the Xero UI. NOT yet confirmed
-    // against a live Xero org (no Everest Plunge credentials to test
-    // against at write time) — verify this endpoint actually fires an
-    // email once OAuth is connected, same discipline as every other
-    // endpoint in this project: don't trust an unconfirmed guess.
-    await xeroRequest(`Invoices/${invoice.InvoiceID}/Email`, { method: 'POST' });
   }
+
+  // Re-sent even on the "already existed" path — cheap and safe (worst
+  // case the customer gets a duplicate copy of the same invoice email),
+  // and the alternative (the previous behavior) was silently never
+  // sending it at all if the first attempt failed after invoice creation.
+  await xeroRequest(`Invoices/${invoice.InvoiceID}/Email`, { method: 'POST' });
 
   // Always attempted, even when the invoice already existed (e.g. this is
   // a replay after a stock-only failure) — safe to call repeatedly because
