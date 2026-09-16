@@ -642,6 +642,18 @@ app.post('/webhooks/shopify/orders-paid', async (req, res) => {
   // a webhook resend.
   res.status(200).send('OK');
 
+  // PAUSE_AUTOMATION (added 2026-09-17) — Xavier: "nothing can be currently
+  // edited apart from the console using AI... has to request each time...
+  // until I'm happy with it." Real deposit/final-invoice/payment writes
+  // stay OFF until this is unset — the order lands in the same failed-log
+  // queue /admin/replay-order already knows how to reprocess, just with a
+  // distinct reason so it's not confused with a real failure.
+  if (process.env.PAUSE_AUTOMATION === 'true') {
+    console.log(`Order ${order.name}: automation paused, queued for manual approval — not touching Xero.`);
+    appendFailedLog({ orderName: order.name, orderId: order.id, order, error: 'PAUSED: automation paused, awaiting explicit approval' });
+    return;
+  }
+
   try {
     const invoice = await createInvoiceForOrder(order);
     console.log(`Order ${order.name}: Xero invoice ${invoice.InvoiceNumber} (${invoice.InvoiceID}) ready.`);
