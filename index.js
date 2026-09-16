@@ -178,14 +178,18 @@ async function xeroRequest(pathSegment, { method = 'GET', params, body, headers 
 // actually needs: accounting.invoices (create the invoice),
 // accounting.payments (mark it paid against the Shopify clearing account —
 // pipely-xero-agent doesn't need this one, it never marks anything paid
-// itself), accounting.contacts (create/match the customer).
+// itself), accounting.contacts (create/match the customer),
+// accounting.settings.read (added same day — Chart of Accounts and Tax
+// Rates are "Settings" resources in Xero's scope model, 401'd without
+// this even though it's read-only; needed for the /admin/xero-accounts
+// diagnostic to resolve the real account/tax codes below).
 // ---------------------------------------------------------------------------
 app.get('/oauth/start', (_req, res) => {
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: process.env.XERO_CLIENT_ID,
     redirect_uri: process.env.XERO_REDIRECT_URI,
-    scope: 'accounting.invoices accounting.payments accounting.contacts offline_access',
+    scope: 'accounting.invoices accounting.payments accounting.contacts accounting.settings.read offline_access',
     state: 'setup'
   });
   res.redirect(`https://login.xero.com/identity/connect/authorize?${params}`);
