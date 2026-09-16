@@ -267,6 +267,29 @@ app.get('/admin/failed-orders', (_req, res) => {
   res.json({ failures: loadFailedLog() });
 });
 
+// Temporary diagnostic (added 2026-09-17) — resolving the real Chart of
+// Accounts/tax codes for env-vars.txt without guessing. Remove once
+// XERO_SALES_ACCOUNT_CODE/XERO_TAX_TYPE/XERO_SHOPIFY_PAYMENTS_ACCOUNT_CODE
+// are confirmed and set.
+app.get('/admin/xero-accounts', async (_req, res) => {
+  try {
+    const [accounts, taxRates] = await Promise.all([
+      xeroRequest('Accounts'),
+      xeroRequest('TaxRates')
+    ]);
+    res.json({
+      accounts: (accounts.Accounts ?? []).map((a) => ({
+        code: a.Code, name: a.Name, type: a.Type, class: a.Class, status: a.Status, taxType: a.TaxType
+      })),
+      taxRates: (taxRates.TaxRates ?? []).map((t) => ({
+        name: t.Name, taxType: t.TaxType, status: t.Status, effectiveRate: t.EffectiveRate
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Reprocess a flagged order after the underlying problem is fixed (e.g. the
 // Xero account code was wrong, or a duplicate contact got merged). Never
 // automatic — a human decides when to call this, per the project's
