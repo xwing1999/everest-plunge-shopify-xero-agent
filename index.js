@@ -169,17 +169,23 @@ async function xeroRequest(pathSegment, { method = 'GET', params, body, headers 
 
 // ---------------------------------------------------------------------------
 // XERO OAUTH BOOTSTRAP — visit /oauth/start once after deploying, log into
-// Xero as Everest Plunge, grant consent. Scopes are Xero's post-2026-03-02
-// granular set (same discovery as wellington-xero-agent) plus the write
-// scopes this agent actually needs: accounting.transactions (create
-// invoices + payments) and accounting.contacts (create/match customers).
+// Xero as Everest Plunge, grant consent.
+//
+// Fixed 2026-09-17: this app ("EP-Agent-Real", reused from pipely-xero-
+// agent) throws invalid_scope on the old combined `accounting.transactions`
+// name — confirmed live on 2026-09-01 when pipely-xero-agent hit the same
+// thing on this same app. Split into the granular scopes this agent
+// actually needs: accounting.invoices (create the invoice),
+// accounting.payments (mark it paid against the Shopify clearing account —
+// pipely-xero-agent doesn't need this one, it never marks anything paid
+// itself), accounting.contacts (create/match the customer).
 // ---------------------------------------------------------------------------
 app.get('/oauth/start', (_req, res) => {
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: process.env.XERO_CLIENT_ID,
     redirect_uri: process.env.XERO_REDIRECT_URI,
-    scope: 'accounting.transactions accounting.contacts offline_access',
+    scope: 'accounting.invoices accounting.payments accounting.contacts offline_access',
     state: 'setup'
   });
   res.redirect(`https://login.xero.com/identity/connect/authorize?${params}`);
