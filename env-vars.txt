@@ -32,22 +32,26 @@ XERO_REFRESH_TOKEN=
 XERO_TOKEN_FILE=/data/xero-token.json
 FAILED_LOG_FILE=/data/failed-orders.json
 
-# --- Xero chart-of-accounts values — CONFIRM these against your real Xero
-# org, do not guess. Ask your accountant if unsure.
-# Account code that Shopify sales line items post to (e.g. a "Sales" revenue
-# account — check Xero > Accounting > Chart of Accounts for the real code).
+# --- Xero chart-of-accounts values — confirmed live 2026-09-17 against the
+# real Everest Plunge Limited Xero org (via a temporary /admin/xero-accounts
+# diagnostic, since removed). Real values, not guessed:
+# Account code that Shopify sales line items post to.
+# Confirmed: 106 ("Sales - Shopify").
 XERO_SALES_ACCOUNT_CODE=
-# Tax type matching how your Shopify prices are entered. NZ retail prices
-# are normally GST-inclusive — if that's true for Everest Plunge's Shopify
-# products, this should be Xero's 15% GST tax type (commonly "OUTPUT2" on
-# NZ Xero orgs, but confirm the exact code in your org — Xero > Advanced >
-# Tax rates).
+# Tax type matching how Shopify prices are entered (GST-inclusive NZ retail).
+# Confirmed: OUTPUT2 (15% GST on Income).
 XERO_TAX_TYPE=
-# A bank/clearing account representing Shopify Payments payouts. This agent
-# marks each invoice PAID immediately against this account (Shopify already
+# The account Shopify checkout payments actually land in. This agent marks
+# each invoice PAID immediately against this account (Shopify already
 # collected the money at checkout) — otherwise every online sale sits in
-# Xero as an outstanding unpaid receivable, which is wrong. Leave blank to
-# skip this step and leave invoices as AUTHORISED/unpaid instead.
+# Xero as an outstanding unpaid receivable, which is wrong. Confirmed with
+# Xavier 2026-09-17: Shopify uses Stripe as its payment gateway for this
+# store (explains the separate "Sales - Stripe" revenue account, 102, which
+# this agent does NOT use — that's for a different Stripe-direct channel,
+# unrelated to Shopify). No dedicated "Shopify clearing account" exists —
+# real value: 605 ("Stripe NZD 1", a real bank account, not a clearing
+# account). Leave blank to skip this step and leave invoices as
+# AUTHORISED/unpaid instead.
 XERO_SHOPIFY_PAYMENTS_ACCOUNT_CODE=
 
 # --- Shopify webhook — register the webhook itself via Shopify Admin >
